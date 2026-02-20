@@ -1,0 +1,109 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import request from 'supertest';
+import express from 'express';
+// @ts-ignore
+import parentRoutes from '../routes/parent';
+import { prisma } from '@/db';
+
+const app = express();
+app.use(express.json());
+app.use('/api/parent', parentRoutes);
+
+// Mock authMiddleware
+vi.mock('../middleware/authMiddleware', () => ({
+    authMiddleware: (req: any, res: any, next: any) => {
+        req.user = { id: 'parent-user-id', role: 'PARENT' };
+        next();
+    },
+    requireRole: (...roles: any[]) => (req: any, res: any, next: any) => next(),
+}));
+
+// Mock prisma
+vi.mock('@/db', () => ({
+    prisma: {
+        user: {
+            findUnique: vi.fn(),
+            create: vi.fn(),
+        },
+        parentProfile: {
+            upsert: vi.fn(),
+            findUnique: vi.fn()
+        },
+        learnerProfile: {
+            findUnique: vi.fn()
+        },
+        familyMember: {
+            create: vi.fn(),
+            findFirst: vi.fn(),
+            findMany: vi.fn()
+        },
+        lessonProgress: {
+            aggregate: vi.fn(),
+            findMany: vi.fn(),
+            count: vi.fn()
+        },
+        messageThread: {
+            findMany: vi.fn()
+        }
+    },
+}));
+
+describe('Parent Routes', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    describe('POST /api/parent/children/link', () => {
+        it('should link a child by studentId', async () => {
+            const studentId = 'LX-12345';
+            const childUser = { id: 'child-id', firstName: 'Child', lastName: 'Name', role: 'LEARNER' };
+
+            vi.mocked(prisma.learnerProfile.findUnique).mockResolvedValue({
+                userId: 'child-id',
+                user: childUser
+            } as any);
+
+            vi.mocked(prisma.parentProfile.upsert).mockResolvedValue({ id: 'parent-profile-id' } as any);
+            vi.mocked(prisma.familyMember.create).mockResolvedValue({
+                id: 'fm-id',
+                child: { ...childUser, learnerProfile: { grade: '5' } }
+            } as any);
+
+            const response = await request(app)
+                .post('/api/parent/children/link')
+                .send({ studentId });
+
+            expect(response.status).toBe(200);
+            expect(response.body.message).toBe('Child linked successfully');
+            expect(response.body.familyMember).toBeDefined();
+        });
+    });
+
+    describe('GET /api/parent/dashboard', () => {
+        it('should return parent dashboard data', async () => {
+            vi.mocked(prisma.parentProfile.findUnique).mockResolvedValue({
+                id: 'parent-profile-id',
+                children: [
+                    {
+                        child: {
+                            id: 'child-id',
+                            firstName: 'Child',
+                            lastName: 'One',
+                            learnerProfile: { grade: '3', studentId: 'LX-11111' },
+                            lessonProgress: []
+                        }
+                    }
+                ]
+            } as any);
+
+            vi.mocked(prisma.lessonProgress.findMany).mockResolvedValue([]);
+            vi.mocked(prisma.lessonProgress.count).mockResolvedValue(0);
+            vi.mocked(prisma.messageThread.findMany).mockResolvedValue([]);
+
+            const response = await request(app).get('/api/parent/dashboard');
+
+            expect(response.status).toBe(200);
+            expect(response.body.children).toHaveLength(1);
+        });
+    });
+});
